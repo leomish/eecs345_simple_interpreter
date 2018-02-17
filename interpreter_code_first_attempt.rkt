@@ -2,7 +2,6 @@
 ;A first attempt at writing some of the interpreter functions
 ;Leo Mishlove
 
-;#lang racket
 (require "simpleParser.scm")
 
 ;to parse: type program code into a file, call (parser "filename"). parser returns parse tree in list format
@@ -95,6 +94,12 @@
       (else (error "Operator not recognized")))))
 ;^definitely not tail recursive or continuation-passing.
 
+;gets the value of a return statement ret-stmt given the current state, state
+(define m_value_return
+  (lambda (ret-stmt state)
+    (m_value_expr (ret_expr ret-stmt) state)))
+    
+
 
 ;M_STATE FUNCTIONS
 
@@ -126,7 +131,7 @@
     (cond
       ((eq? (lookup (varname assign) state) 'not_found) (error "Variable not initialized"))
       (else (state-add-val (varname assign) (m_value_expr (assign_expr assign) state) (state-remove (varname assign) state))))))
-      
+
 
 
 
@@ -155,7 +160,12 @@
 ;takes a declaration or assignment statement stmt; gets the expression whose value is to be assigned to the var on the left hand side. works only for assignment statements and 'dec_init statements (bc in 'dec_only, cddr is null).
 (define assign_expr
   (lambda (stmt)
-    (caddr stmt))) ;cdr is (name (expr)) and cddr is ((expr)) so caddr is (expr). 
+    (caddr stmt))) ;cdr is (name (expr)) and cddr is ((expr)) so caddr is (expr).
+
+;gets the expression to be returned from a return statement
+(define ret_expr
+  (lambda (ret-stmt)
+    (cadr ret-stmt)))
 
 
 ;lookup variable in the state and return its 'value'
