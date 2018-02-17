@@ -54,7 +54,9 @@
 ;gets the value of a variable binding
 (define m_value_var
   (lambda (var state)
-    (m_value_val (lookup var state))))
+    (if (eq? (lookup var state) 'not_found)
+        (error "Variable not found")
+        (m_value_val (lookup var state)))))
 
 ;finds the value of an expression, including variables and integer/boolean values
 ;<expr> -> <op><expr><expr>|<var>|<value>
@@ -96,8 +98,28 @@
 
 ;M_STATE FUNCTIONS
 
+;m_state_declare - the state after declaring a variable. takes a declaration statement decl and the current state state and gives the new value of the state.
+(define m_state_declare
+  (lambda (decl state)
+    (cond
+      ((eq? (decl_kind decl) 'var) (m_state_var_dec decl state))
+      ((eq? (decl_kind decl) '=) (m_state_init_dec decl state))
+      (else (error "Interpreter error"))))) ;it shouldn't be entering this fcn unless we know it's a variable declaration, and variable declarations only start with 'var or '=.
 
+;gives the state of a 'var declaration statement decl and the current state state
+(define m_state_var_dec
+  (lambda (decl state)
+    (cond
+      ((eq? (lookup (varname decl) state) 'not_found) (state-add-val (varname decl) 'error state)) 
+      (else (error "Variable already declared"))))) ;don't want to allow a variable to be declared again.
 
+;gives the state of a '= declaration statement decl and the current state state
+(define m_state_init_dec
+  (lambda (decl state)
+    (cond
+      ((eq? (lookup (varname decl) state) 'not_found) (state-add-val (varname decl) (m_value_expr (init_expr decl) state) state))
+      (else (error "Variable already declared")))))
+      
 
 
 
@@ -118,6 +140,15 @@
   (lambda (expr)
     (caddr expr)))
      
+;varname - gets the variable name of a declaration expression. works for both 'var and '= declarations.
+(define varname
+  (lambda (decl)
+    (cadr decl)))
+
+;takes a declaration statement decl; gets the expression whose value is to be assigned to the new var
+(define init_expr
+  (lambda (decl)
+    (caddr decl))) ;cdr is (name (expr)) and cddr is ((expr)) so caddr is (expr). 
 
 
 ;lookup variable in the state and return its 'value'
@@ -128,17 +159,25 @@
   (lambda (var state)
     (cond
       ((not (state-valid? state)) (error "State construction error"))
-      ((null? (var_list state)) "Variable not found");(error "Undeclared variable")) ;not sure how to specify which variable
-      ((and (eq? var (first_var state)) (null? (value_list state))) (error "Variable not initialized"))
+      ((null? (var_list state)) 'not_found);(error "Undeclared variable")) ;not sure how to specify which variable
+      ((and (eq? var (first_var state)) (null? (value_list state))) (error "State construction error"))
       ((eq? var (first_var state)) (first_value state))
       (else (lookup var (state_tail state)))))) ;Note that lookup is tail recursive
 
 ;adds a variable (and its value) to the state - returns a state
-(define state-add
+(define state-add-val
   (lambda (var value state)
     (cond
       ((not (state-valid? state)) (error "State construction error"))
       (else (list (cons var (var_list state)) (cons value (value_list state)))))))
+;adds a variable (no value yet) to the state - returns a state
+;(define state-add
+;  (lambda (var state)
+;    (cond
+;      ((not (state-valid? state)) (error "State construction error"))
+;      (else (list (cons var (var_list state)) (value_list state))))))
+;doing it this way will mess with the integrity of the list, b/c different length of each of the lists. e.g. adding y to '((x z) (1 2)) returns '((y x z) (1 2)) and then when you try to get the value of y, you get 1, and that's wrong.
+;so instead, will initialize 'var declarations with 'error.
 
 ;removes a variable (and its value) from the state - returns a state
 (define state-remove-bad
@@ -217,5 +256,10 @@
       ((eq? val 'true) #t)
       ((eq? val 'false) #t)
       (else #f))))
+
+;takes a declaration statement and tells you what kind of declaration it is: 'var, which only declares, or '=, which declares and initializes.
+(define decl_kind
+  (lambda (decl)
+    (car decl)))
 
   
