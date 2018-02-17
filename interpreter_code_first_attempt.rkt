@@ -102,23 +102,30 @@
 (define m_state_declare
   (lambda (decl state)
     (cond
-      ((eq? (decl_kind decl) 'var) (m_state_var_dec decl state))
-      ((eq? (decl_kind decl) '=) (m_state_init_dec decl state))
+      ((eq? (decl_kind decl) 'dec_only) (m_state_dec_only decl state))
+      ((eq? (decl_kind decl) 'dec_init) (m_state_dec_init decl state))
       (else (error "Interpreter error"))))) ;it shouldn't be entering this fcn unless we know it's a variable declaration, and variable declarations only start with 'var or '=.
 
-;gives the state of a 'var declaration statement decl and the current state state
-(define m_state_var_dec
+;gives the state after a 'dec_only declaration statement decl and the current state state
+(define m_state_dec_only
   (lambda (decl state)
     (cond
       ((eq? (lookup (varname decl) state) 'not_found) (state-add-val (varname decl) 'error state)) 
       (else (error "Variable already declared"))))) ;don't want to allow a variable to be declared again.
 
-;gives the state of a '= declaration statement decl and the current state state
-(define m_state_init_dec
+;gives the state after a 'dec_init declaration statement decl and the current state state
+(define m_state_dec_init
   (lambda (decl state)
     (cond
-      ((eq? (lookup (varname decl) state) 'not_found) (state-add-val (varname decl) (m_value_expr (init_expr decl) state) state))
+      ((eq? (lookup (varname decl) state) 'not_found) (state-add-val (varname decl) (m_value_expr (assign_expr decl) state) state))
       (else (error "Variable already declared")))))
+
+;gives the state after an assignment statement. takes the assignment statement, assign and the current state, state
+(define m_state_assign
+  (lambda (assign state)
+    (cond
+      ((eq? (lookup (varname assign) state) 'not_found) (error "Variable not initialized"))
+      (else (state-add-val (varname assign) (m_value_expr (assign_expr assign) state) (state-remove (varname assign) state))))))
       
 
 
@@ -140,15 +147,15 @@
   (lambda (expr)
     (caddr expr)))
      
-;varname - gets the variable name of a declaration expression. works for both 'var and '= declarations.
+;varname - gets the variable name of the left side of a declaration or assignment statement. works for both 'dec_only and 'dec_init declarations, as well as assignment statements.
 (define varname
-  (lambda (decl)
-    (cadr decl)))
+  (lambda (stmt)
+    (cadr stmt)))
 
-;takes a declaration statement decl; gets the expression whose value is to be assigned to the new var
-(define init_expr
-  (lambda (decl)
-    (caddr decl))) ;cdr is (name (expr)) and cddr is ((expr)) so caddr is (expr). 
+;takes a declaration or assignment statement stmt; gets the expression whose value is to be assigned to the var on the left hand side. works only for assignment statements and 'dec_init statements (bc in 'dec_only, cddr is null).
+(define assign_expr
+  (lambda (stmt)
+    (caddr stmt))) ;cdr is (name (expr)) and cddr is ((expr)) so caddr is (expr). 
 
 
 ;lookup variable in the state and return its 'value'
@@ -257,9 +264,11 @@
       ((eq? val 'false) #t)
       (else #f))))
 
-;takes a declaration statement and tells you what kind of declaration it is: 'var, which only declares, or '=, which declares and initializes.
+;takes a declaration statement and tells you what kind of declaration it is: 'dec_only, which only declares, or 'dec_init, which declares and initializes.
 (define decl_kind
   (lambda (decl)
-    (car decl)))
+    (cond
+      ((null? (cddr decl)) 'dec_only)
+      (else 'dec_init))))
 
   
