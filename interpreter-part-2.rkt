@@ -35,7 +35,7 @@
   (lambda (parsetree state return) 
     (cond
       ((null? parsetree) (error "Missing return statement"))
-      (else (eval-rec (cdr parsetree) (m_state_eval (car parsetree) state return) return))))) ;hey, tail recursion! nice
+      (else (eval-rec (cdr parsetree) (m_state_eval (car parsetree) state return null null) return))))) ;hey, tail recursion! nice
 
 
 
@@ -47,15 +47,17 @@
 
 ;1. m_state_eval --  evaluates expressions. what more do you want from me
 (define m_state_eval
-  (lambda (expr state return)
+  (lambda (expr state return break continue)
     (cond
       ((null? expr) (error "Undefined expression"))
-      ((eq? (opr expr) '=) (m_state_assign expr state))
+      ((eq? (opr expr) '=) (m_state_assign expr state)) ;do this & the next one need continue?
       ((eq? (opr expr) 'var) (m_state_declare expr state))
       ((eq? (opr expr) 'while) (m_state_loop expr state return))
-      ((eq? (opr expr) 'if) (m_state_cond expr state return))
+      ((eq? (opr expr) 'if) (m_state_cond expr state return break continue)) 
       ((eq? (opr expr) 'return) (m_state_return (ret-expr expr) state return))
-      ((eq? (opr expr) 'begin) (m_state_block expr state return)) ;added for handling blocks
+      ((eq? (opr expr) 'begin) (m_state_block expr state return break continue)) ;added for handling blocks
+      ((eq? (opr expr) 'continue) (continue state)) ;if the statement is just (continue), then call continue on the current state
+      ((eq? (opr expr) 'break) (break state))
       (else (error "Invalid expression")))))
 
 
@@ -102,9 +104,25 @@
 ;6: While loops
 
 ;6. m_state_loop evaluates while loops - this is also tail recursive, which is neat
+;(define m_state_loop
+;  (lambda (expr state return)
+;    (if (m_value_expr (condition expr) state) (m_state_loop expr (m_state_eval (loop-body expr) state return) return) state)))
+
+;the break continuation goes just before the loop starts
+;the continue continuation goes just before the loop condition evaluates
+
 (define m_state_loop
   (lambda (expr state return)
-    (if (m_value_expr (condition expr) state) (m_state_loop expr (m_state_eval (loop-body expr) state return) return) state)))
+    (call/cc
+     (lambda (break)
+       (m_state_loop-cc expr state return break)))))
+
+
+(define m_state_loop-cc
+  (lambda (expr state return break)
+       (if (m_value_expr (condition expr) state)
+           (m_state_loop-cc expr (call/cc (lambda (continue) (m_state_eval (loop-body expr) state return break continue))) return break) ;so m_state_eval needs to take a continue
+           state)))
 
 
 
@@ -112,28 +130,28 @@
 
 ;7. m_state_cond -- evaluates if/else statements - the m_state_eval can call m_state_cond, which allows for nested statements
 (define m_state_cond
-  (lambda (expr state return)
+  (lambda (expr state return break continue)
     (if (eq? (cond-type expr) 'if_only)
-        (m_state_if_only expr state return)
-        (m_state_if_else expr state return))))
+        (m_state_if_only expr state return break continue)
+        (m_state_if_else expr state return break continue))))
 
 ;8. m_state_if_only -- evaluates an if statement that doesn't have an else
 (define m_state_if_only
-  (lambda (expr state return)
+  (lambda (expr state return break continue)
     (if (m_value_expr (condition expr) state)
-        (m_state_eval (then-stmt expr) state return)
+        (m_state_eval (then-stmt expr) state return break continue)
         state)))
 
 ;9. m_state_if_else -- evaluates an if-else statement
 (define m_state_if_else
-  (lambda (expr state return)
+  (lambda (expr state return break continue)
     (if (m_value_expr (condition expr) state)
-        (m_state_eval (then-stmt expr) state return)
-        (m_state_eval (else-stmt expr) state return))))
+        (m_state_eval (then-stmt expr) state return break continue)
+        (m_state_eval (else-stmt expr) state return break continue))))
 
 
 
-;10: Return statements
+;10-13: Continuations: return, break, continue, throw statements
 
 ;10. m_state_return --  returns the value of the expression given.
 (define m_state_return
@@ -142,6 +160,15 @@
       ((eq? (m_value_expr expr state) #t) (return 'true))
       ((eq? (m_value_expr expr state) #f) (return 'false))
       (else (return (m_value_expr expr state))))))
+;11. m_state_break -- breaks at the point given, returning the current state to outside the current loop
+(define m_state_break
+  (lambda (expr state return break) ;prob don't need expr or return
+    (break state)))
+
+;12. m_state_continue -- goes to the next loop iteration instead of continuing to evaluate the loop body. returns the current state to just before the loop condition is checked.
+(define m_state_continue
+  (lambda (expr state return continue) ;prob don't need expr or return
+    (continue state)))
 
 
 
@@ -149,14 +176,24 @@
 
 ;11. m_state_stmt_list -- evaluates the state after executing a list of statements slist
 (define m_state_stmt_list
-  (lambda (slist state return)
+  (lambda (slist state return break continue)
     (cond
       ((null? slist) state)
-      (else (m_state_stmt_list (cdr slist) (m_state_eval (car slist) state return) return))))) ;not tail recursive!!
+      (else (m_state_stmt_list (cdr slist) (m_state_eval (car slist) state return break continue) return break continue))))) ;not tail recursive!!
 ;12. m_state_block -- evaluates the state after executing a block statement
 (define m_state_block
-  (lambda (block state return)
-    (state-removelayer (m_state_stmt_list (block-slist block) (state-addlayer state) return))))
+  (lambda (block state return break continue)
+    (state-removelayer (m_state_stmt_list (block-slist block) (state-addlayer state) return break continue))))
+
+
+;(define m_state_stmt_list-cc
+;  (lambda (slist state return continue)
+;    (cond
+;      ((null? slist) state)
+;      (else (m_state_stmt_list (cdr slist) (m_state_eval-cc (car slist) state return continue) return))))) ;not tail recursive!!
+;(define m_state_block-cc
+;  (lambda (block state return)
+;    (state-removelayer (m_state_stmt_list-cc (block-slist block) (state-addlayer state) return continue))))
 
 ;test case used:
 ;> (define b1 (box 1))
@@ -188,10 +225,7 @@
                                ; I *don't* think that helps though.
 
 
-;helper fcn block-slist -- gives the block statement without the 'begin at the front
-(define block-slist
-  (lambda (block)
-    (cdr block)))
+
 
               
 
@@ -540,5 +574,11 @@
       ((eq? val 'false) #t)
       (else #f))))
 
+;28: Blocks
+
+;28. block-slist -- gives the block statement without the 'begin at the front
+(define block-slist
+  (lambda (block)
+    (cdr block)))
 
   
