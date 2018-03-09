@@ -55,6 +55,7 @@
       ((eq? (opr expr) 'while) (m_state_loop expr state return))
       ((eq? (opr expr) 'if) (m_state_cond expr state return))
       ((eq? (opr expr) 'return) (m_state_return (ret-expr expr) state return))
+      ((eq? (opr expr) 'begin) (m_state_block expr state return)) ;added for handling blocks
       (else (error "Invalid expression")))))
 
 
@@ -75,6 +76,7 @@
     (cond
       ((eq? (lookup (varname decl) state) 'not_found) (state-add-val (varname decl) 'error state)) 
       (else (error "Variable already declared"))))) ;don't want to allow a variable to be declared again.
+;to change to boxes, change state-add-val, deprecate state-remove, add state-change-val.
 
 ;4. m_state_dec_init -- gives the state after a 'dec_init declaration statement decl and the current state state
 (define m_state_dec_init
@@ -92,7 +94,8 @@
   (lambda (assign state)
     (cond
       ((eq? (lookup (varname assign) state) 'not_found) (error "Variable not initialized"))
-      (else (state-add-val (varname assign) (m_value_expr (assign_expr assign) state) (state-remove (varname assign) state))))))
+      (else (state-change-val (varname assign) (m_value_expr (assign_expr assign) state) state)))))
+      ;(else (state-add-val (varname assign) (m_value_expr (assign_expr assign) state) (state-remove (varname assign) state))))))
 
 
 
@@ -142,6 +145,58 @@
 
 
 
+;11-12: Blocks
+
+;11. m_state_stmt_list -- evaluates the state after executing a list of statements slist
+(define m_state_stmt_list
+  (lambda (slist state return)
+    (cond
+      ((null? slist) state)
+      (else (m_state_stmt_list (cdr slist) (m_state_eval (car slist) state return) return))))) ;not tail recursive!!
+;12. m_state_block -- evaluates the state after executing a block statement
+(define m_state_block
+  (lambda (block state return)
+    (state-removelayer (m_state_stmt_list (block-slist block) (state-addlayer state) return))))
+
+;test case used:
+;> (define b1 (box 1))
+;> (define b2 (box 2))
+;> (define b3 (box 3))
+;> (define newstate (call/cc (lambda (return) (m_state_stmt_list '((= i (+ i 1)) (= j (+ j 1))) (list (list (list 'i 'j 'k) (list b1 b2 b3))) return))))
+;> (m_value_var 'i newstate)
+;2
+;> (m_value_var 'j newstate)
+;3
+;> (m_value_var 'k newstate)
+;3 
+
+
+
+;11a. m_state_block
+;(define m_state_block
+;  (lambda (block state return)
+;    (state-removelayer (m_state_block-cps (block-tail block) (state-addlayer state) return (lambda (v) v)))))
+
+;(define m_state_block-cps
+;  (lambda (block state return cps)
+;    (cond
+;      ((null? block) (cps state))
+;      (else (m_state_block-cps (cdr block)))))) ;what to put in for the state? can't use m_state_eval b/c then it won't be cps. (m_state_eval-cps (car block) state return
+                               ;;nvm!! we only need to make return, break, continue, and throw tail-recursive!! not all of the state!!
+                               ;;wait do we?? --> ASK IN CLASS!!!
+                               ;wait --- I think we might be able to use the call/cc return continuation as the cps function --yes you can!!!
+                               ; I *don't* think that helps though.
+
+
+;helper fcn block-slist -- gives the block statement without the 'begin at the front
+(define block-slist
+  (lambda (block)
+    (cdr block)))
+
+              
+
+
+
 
 
 ;------------------------------------------------------------------------------------------
@@ -176,12 +231,18 @@
 ;4: Variables
 
 ;4. m_value_var -- gets the value of a variable binding
+;(define m_value_var
+;  (lambda (var state)
+;    (if (eq? (lookup var state) 'not_found)
+;        (error "Variable not found")
+;        (m_value_val (lookup var state)))))
+
+;4. m_value_var -- gets the value of a variable binding. UPDATED FOR BOX IMPLEMENTATION.
 (define m_value_var
   (lambda (var state)
     (if (eq? (lookup var state) 'not_found)
         (error "Variable not found")
-        (m_value_val (lookup var state)))))
-
+        (m_value_val (unbox (lookup var state))))))
 
 
 ;5-6: Expressions
@@ -330,12 +391,29 @@
 ;Tested 3/8/18 -- (state-add-val 'x 10 '(((a b c)(1 2 3)) ((f x e)(8 #f 10)) ((c d x)(1 4 #t)))) ==> (((x a b c) (10 1 2 3)) ((f x e) (8 #f 10)) ((c d x) (1 4 #t))) as expected
 ;12. state-add-val -- adds a variable (and its value) to the state - returns a state
 ;above, we use 'error for the value if the variable is declared but not initialized
-(define state-add-val
-  (lambda (var value state)
-    (cons (list (cons var (var_list (top_layer state))) (cons value (value_list (top_layer state)))) (state_tail state))))
+;(define state-add-val
+;  (lambda (var value state)
+;    (cons (list (cons var (var_list (top_layer state))) (cons value (value_list (top_layer state)))) (state_tail state))))
 ;add the variable and its value to the top layer of the state, then cons the modified top layer onto the rest of the state
 
 
+;12. state-add-val -- adds a variable and its value to the state, using boxes. for BOX IMPLEMENTATION
+(define state-add-val
+  (lambda (var value state)
+    (cons (list (cons var (var_list (top_layer state))) (cons (box value) (value_list (top_layer state)))) (state_tail state))))
+;then add a call to unbox inside m_value_var
+
+;13. state-change-val -- changes the box value of a variable in the state to the new value. note that this fcn isn't recursive, and is for BOX IMPLEMENTATION
+(define state-change-val 
+  (lambda (var value state)
+    (begin
+      (set-box! (lookup var state) value) ;lookup the variable's value in the state, which should be a box. set that box to the new value.
+      state)))
+
+
+
+
+;DEPRECATED!!!
 ;Tested 3/8/18 -- (state-remove 'x '(((a b c)(1 2 3)) ((f x e)(8 #f 10)) ((c d x)(1 4 #t)))) ==> (((a b c) (1 2 3)) ((f e) (8 10)) ((c d x) (1 4 #t))) as expected.
 ;13ai. state-remove -- cover for state-remove-cps
 (define state-remove
