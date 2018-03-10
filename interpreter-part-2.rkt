@@ -56,8 +56,8 @@
       ((eq? (opr expr) 'if) (m_state_cond expr state return break continue)) 
       ((eq? (opr expr) 'return) (m_state_return (ret-expr expr) state return))
       ((eq? (opr expr) 'begin) (m_state_block expr state return break continue)) ;added for handling blocks
-      ((eq? (opr expr) 'continue) (continue state)) ;if the statement is just (continue), then call continue on the current state
-      ((eq? (opr expr) 'break) (break state))
+      ((eq? (opr expr) 'continue) (m_state_continue state continue)) ;if the statement is just (continue), then call continue on the current state
+      ((eq? (opr expr) 'break) (m_state_break state break))
       (else (error "Invalid expression")))))
 
 
@@ -111,18 +111,20 @@
 ;the break continuation goes just before the loop starts
 ;the continue continuation goes just before the loop condition evaluates
 
+;6a. m_state_loop -- evaluates while loops, adding the break continuation
 (define m_state_loop
   (lambda (expr state return)
-    (call/cc
-     (lambda (break)
-       (m_state_loop-cc expr state return break)))))
+    (state-removelayers-until ;remove layers until you hit as many as were in the state before entering the loop
+     (call/cc
+      (lambda (break)
+       (m_state_loop-cc expr state return break (numlayers state)))) (numlayers state))))
 
-
+;6b. m_state_loop-cc -- evaluates while loops. should be used inside of m_state_loop.
 (define m_state_loop-cc
-  (lambda (expr state return break)
+  (lambda (expr state return break nlayers)
        (if (m_value_expr (condition expr) state)
-           (m_state_loop-cc expr (call/cc (lambda (continue) (m_state_eval (loop-body expr) state return break continue))) return break) ;so m_state_eval needs to take a continue
-           state)))
+           (m_state_loop-cc expr (state-removelayers-until (call/cc (lambda (continue) (m_state_eval (loop-body expr) state return break continue))) nlayers) return break nlayers)
+           (state-removelayers-until state nlayers))))
 
 
 
@@ -160,42 +162,39 @@
       ((eq? (m_value_expr expr state) #t) (return 'true))
       ((eq? (m_value_expr expr state) #f) (return 'false))
       (else (return (m_value_expr expr state))))))
+
 ;11. m_state_break -- breaks at the point given, returning the current state to outside the current loop
 (define m_state_break
-  (lambda (expr state return break) ;prob don't need expr or return
-    (break state)))
+  (lambda (state break)
+    (if (null? break)
+        (error "Invalid use of break")
+        (break state))))
 
 ;12. m_state_continue -- goes to the next loop iteration instead of continuing to evaluate the loop body. returns the current state to just before the loop condition is checked.
 (define m_state_continue
-  (lambda (expr state return continue) ;prob don't need expr or return
-    (continue state)))
+  (lambda (state continue)
+    (if (null? continue)
+        (error "Invalid use of continue")
+        (continue state))))
+
+;13. m_state_throw
 
 
 
-;11-12: Blocks
+;14-15: Blocks
 
-;11. m_state_stmt_list -- evaluates the state after executing a list of statements slist
+;14. m_state_stmt_list -- evaluates the state after executing a list of statements slist
 (define m_state_stmt_list
   (lambda (slist state return break continue)
     (cond
       ((null? slist) state)
       (else (m_state_stmt_list (cdr slist) (m_state_eval (car slist) state return break continue) return break continue))))) ;not tail recursive!!
-;12. m_state_block -- evaluates the state after executing a block statement
+;15. m_state_block -- evaluates the state after executing a block statement
 (define m_state_block
   (lambda (block state return break continue)
     (state-removelayer (m_state_stmt_list (block-slist block) (state-addlayer state) return break continue))))
 
-
-;(define m_state_stmt_list-cc
-;  (lambda (slist state return continue)
-;    (cond
-;      ((null? slist) state)
-;      (else (m_state_stmt_list (cdr slist) (m_state_eval-cc (car slist) state return continue) return))))) ;not tail recursive!!
-;(define m_state_block-cc
-;  (lambda (block state return)
-;    (state-removelayer (m_state_stmt_list-cc (block-slist block) (state-addlayer state) return continue))))
-
-;test case used:
+;test case used: (done before break & continue were added --- use null for both if testing m_state_block
 ;> (define b1 (box 1))
 ;> (define b2 (box 2))
 ;> (define b3 (box 3))
@@ -206,23 +205,6 @@
 ;3
 ;> (m_value_var 'k newstate)
 ;3 
-
-
-
-;11a. m_state_block
-;(define m_state_block
-;  (lambda (block state return)
-;    (state-removelayer (m_state_block-cps (block-tail block) (state-addlayer state) return (lambda (v) v)))))
-
-;(define m_state_block-cps
-;  (lambda (block state return cps)
-;    (cond
-;      ((null? block) (cps state))
-;      (else (m_state_block-cps (cdr block)))))) ;what to put in for the state? can't use m_state_eval b/c then it won't be cps. (m_state_eval-cps (car block) state return
-                               ;;nvm!! we only need to make return, break, continue, and throw tail-recursive!! not all of the state!!
-                               ;;wait do we?? --> ASK IN CLASS!!!
-                               ;wait --- I think we might be able to use the call/cc return continuation as the cps function --yes you can!!!
-                               ; I *don't* think that helps though.
 
 
 
@@ -325,7 +307,7 @@
 ;------------------------------------------------------------------------------------------
 ;HELPER FUNCTIONS
 
-;1-4: State construction -- UPDATED FOR LAYERS
+;1-4: State construction and management of structure -- UPDATED FOR LAYERS
 ;LAYERED STATE FORMAT:
 ;     (     ( (var5 var6 ... )(val5 val6 ... ) )
 ;           ( (var3 var4 ... )(val3 val4 ... ) )
@@ -351,6 +333,18 @@
   (lambda (state)
     (cdr state)))
 
+;5. numlayers -- gives how many layers are in the state
+(define numlayers
+  (lambda (state)
+    (length state)))
+
+;6. state-removelayers-until -- removes layers from the state until a target number of layers ("goal") has been reached.
+(define state-removelayers-until
+  (lambda (state goal)
+    (cond
+      ((< (numlayers state) goal) (error "Improper usage: goal # layers must be less than current # layers in state"))
+      ((eq? (numlayers state) goal) state)
+      (else (state-removelayers-until (state-removelayer state) goal)))))
 
 
 ;5-9: Parts of the state -- UPDATED FOR LAYERS
