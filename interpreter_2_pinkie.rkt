@@ -1,6 +1,6 @@
 ;Taylor Woodcock
 ;Leo Mishlove
-;EECS 345 -- Interpreter Part 1
+;EECS 345 -- Interpreter Part 2
 
 ;HOW TO USE:
 ; 1. Type program code into a plain text file. Save it in the same directory as this file (as well as simpleParser.scm and lex.scm)
@@ -52,14 +52,14 @@
       ((null? expr) (error "Undefined expression"))
       ((eq? (opr expr) '=) (m_state_assign expr state)) ;do this & the next one need continue?
       ((eq? (opr expr) 'var) (m_state_declare expr state))
-      ((eq? (opr expr) 'while) (m_state_loop expr state return))
+      ((eq? (opr expr) 'while) (m_state_loop expr state return throw))
       ((eq? (opr expr) 'if) (m_state_cond expr state return break continue throw)) 
       ((eq? (opr expr) 'return) (m_state_return (ret-expr expr) state return))
       ((eq? (opr expr) 'begin) (m_state_block expr state return break continue throw)) ;added for handling blocks
       ((eq? (opr expr) 'continue) (m_state_continue state continue)) ;if the statement is just (continue), then call continue on the current state
       ((eq? (opr expr) 'break) (m_state_break state break))
-      ((eq? (opr expr) 'try) (m_state_try expr state return))
-      ((eq? (opr expr) 'throw) (m_state_throw expr state throw))
+      ((eq? (opr expr) 'try) (m_state_try expr state return throw))
+      ((eq? (opr expr) 'throw) (m_state_throw expr state return throw))
       (else (error "Invalid expression")))))
 
 
@@ -115,7 +115,7 @@
 
 ;6a. m_state_loop -- evaluates while loops, adding the break continuation
 (define m_state_loop
-  (lambda (expr state return)
+  (lambda (expr state return throw)
     (state-removelayers-until ;remove layers until you hit as many as were in the state before entering the loop
      (call/cc
       (lambda (break)
@@ -125,7 +125,7 @@
 (define m_state_loop-cc
   (lambda (expr state return break nlayers throw)
        (if (m_value_expr (condition expr) state)
-           (m_state_loop-cc expr (state-removelayers-until (call/cc (lambda (continue) (m_state_eval (loop-body expr) state return break continue throw))) nlayers) return break nlayers)
+           (m_state_loop-cc expr (state-removelayers-until (call/cc (lambda (continue) (m_state_eval (loop-body expr) state return break continue throw))) nlayers) return break nlayers throw)
            (state-removelayers-until state nlayers))))
 
 
@@ -181,6 +181,12 @@
 
 ;13. m_state_throw
 
+(define m_state_throw
+  (lambda (expr state return throw)
+    (cond
+      ((equal? return throw) (error "Improper use of throw"))
+      (else (throw (list expr state))))))
+
 
 
 ;14-15: Blocks
@@ -196,64 +202,47 @@
   (lambda (block state return break continue throw)
     (state-removelayer (m_state_stmt_list (block-slist block) (state-addlayer state) return break continue throw))))
 
-;test case used: (done before break & continue were added --- use null for both if testing m_state_block
-;> (define b1 (box 1))
-;> (define b2 (box 2))
-;> (define b3 (box 3))
-;> (define newstate (call/cc (lambda (return) (m_state_stmt_list '((= i (+ i 1)) (= j (+ j 1))) (list (list (list 'i 'j 'k) (list b1 b2 b3))) return))))
-;> (m_value_var 'i newstate)
-;2
-;> (m_value_var 'j newstate)
-;3
-;> (m_value_var 'k newstate)
-;3
+;16-19: Try/Catch
 
-(define m_state_throw
-  (lambda (expr state throw)
-    (throw (list expr state))))
+;16. m_state_try -- wrapper for the three variants of try blocks
 
 (define m_state_try
-  (lambda (try state return)
+  (lambda (try state return throw2)
       (cond
-        ((and (is-catch? try) (is-finally? try)) (m_state_try_both try state return))
-        ((is-catch? try) (m_state_try_catch try state return))
-        (else (m_state_try_finally try state return)))))
-              
+        ((and (is-catch? try) (is-finally? try)) (m_state_try_both try state return throw2))
+        ((is-catch? try) (m_state_try_catch try state return throw2))
+        (else (m_state_try_finally try state return throw2)))))
+
+;17. m_state_try_catch -- implements try/catch blocks basically through dark magic, this took three hours to code and i understand none of what i wrote
+
 (define m_state_try_catch
-  (lambda (try state return)
+  (lambda (try state return throw2)
     (m_state_catch (try_catch try)
       (call/cc
         (lambda (throw)
           (m_state_eval (try_try try) state return null null throw)))
-      return)))
+      return throw2 (numlayers state))))
+
+;18. m_state_try_finally -- no continuation here! boring; anyway yeah this does try blocks with no catch, so like. blocks. cool.
+
+(define m_state_try_finally
+  (lambda (try state return throw2)
+    (m_state_eval (try_finally try) (m_state_eval (try_try try) state return null null return) return null null throw2)))
+
+;19. m_state_try_both -- uses m_state_try_catch and m_state_try_finally to check when all 3 are present
+
+(define m_state_try_both
+  (lambda (try state return throw2)
+    (m_state_eval (try_finally try) (m_state_try_catch (rmfinally try) state return throw2) return null null throw2)))
+
+;20. m_state_catch -- cleans up the state from being thrown out of the block, evaluates the state for the catch statement, and helpfully returns the original state if it didn't catch anything
+;yes, the pair implementation is weird, but there's no other way i could think to pass two variables with one continuation so you do what you gotta do
 
 (define m_state_catch
-  (lambda (try pair return)
+  (lambda (try pair return throw2 layers)
     (cond
-      ((threw? pair) (m_state_eval (catch_catch try (catch-var try) (pair-val pair)) (pair-state pair) return null null return))
+      ((threw? pair) (m_state_eval (catch_catch try (catch-var try) (pair-val pair)) (state-removelayers-until (pair-state pair) layers) return null null throw2))
       (else (pair-state pair)))))
-      
-(define threw?
-  (lambda (lis)
-    (not (null? (cdr lis)))))
-
-(define catch-var
-  (lambda (try)
-    (cadr try)))
-
-(define pair-val
-  (lambda (lis)
-    (car lis)))
-
-(define pair-state
-  (lambda (lis)
-    (cond
-      ((threw? lis) (cadr lis))
-      (else lis))))
-
-(define catch_catch
-  (lambda (catch var val)
-    (cons 'begin (cons (list 'var var val) (caddr catch)))))
 
 ;------------------------------------------------------------------------------------------
 ;M_VALUE FUNCTIONS
@@ -383,7 +372,7 @@
 (define state-removelayers-until
   (lambda (state goal)
     (cond
-      ((< (numlayers state) goal) (error "Improper usage: goal # layers must be less than current # layers in state"))
+      ((< (numlayers state) goal) state)
       ((eq? (numlayers state) goal) state)
       (else (state-removelayers-until (state-removelayer state) goal)))))
 
@@ -616,6 +605,10 @@
   (lambda (block)
     (cdr block)))
 
+;29-40: Assorted Try/Catch Helper Functions
+
+;29+30: is-catch and is-finally -- let you know if a try block has a catch or a finally block or not
+
 (define is-catch?
   (lambda (try)
     (not (null? (caddr try)))))
@@ -624,14 +617,58 @@
   (lambda (try)
     (not (null? (cadddr try)))))
 
+;31-33: these functions all create an evaluatable block of commands; try_try creates an evaluatable try body from the try loop, etc.
+
 (define try_try
   (lambda (try)
     (cons 'begin (cadr try))))
+
+(define catch_catch
+  (lambda (catch var val)
+    (cons 'begin (cons (list 'var var val) (caddr catch)))))
+
+(define try_finally
+  (lambda (try)
+    (cons 'begin (cadar (cdddr try)))))
+
+;34. try_catch -- this is just a convenience function to simplify the arguments in m_state_catch - you might say this is a confusing name, to which i would say: yes
 
 (define try_catch
   (lambda (try)
     (caddr try)))
 
-(define try_finally
-  (lambda (try var val)
-    (cadddr try)))
+;35: rmfinally -- another convenience function; this isn't strictly functional but the functional implementation is a little over the top so
+
+(define rmfinally
+  (lambda (try)
+    (list (car try) (cadr try) (caddr try))))
+
+;36+37: double? lets you know if there are 2 elements in a list, threw? lets you know if something was thrown by the try block. neat!
+
+(define double?
+  (lambda (lis)
+    (cond
+      ((null? lis) #f)
+      ((null? (cdr lis)) #f)
+      ((null? (cddr lis)) #t)
+      (else #f))))
+
+(define threw?
+  (lambda (lis)
+    (and (not (null? (cdr lis))) (double? lis))))
+
+;38-40: these functions all grab specific sections of data used in m_state_catch; catch-var finds the variable name stated by catch, whereas pair-val and pair-state extract information from the continuation
+
+(define catch-var
+  (lambda (try)
+    (caadr try)))
+
+(define pair-val
+  (lambda (lis)
+    (car lis)))
+
+(define pair-state
+  (lambda (lis)
+    (cond
+      ((threw? lis) (cadr lis))
+      (else lis))))
