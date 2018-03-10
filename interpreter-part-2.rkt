@@ -1,6 +1,6 @@
 ;Taylor Woodcock
 ;Leo Mishlove
-;EECS 345 -- Interpreter Part 1
+;EECS 345 -- Interpreter Part 2
 
 ;HOW TO USE:
 ; 1. Type program code into a plain text file. Save it in the same directory as this file (as well as simpleParser.scm and lex.scm)
